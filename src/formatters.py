@@ -7,7 +7,7 @@ Conventions:
 - All messages use HTML parse_mode
 - Dollar PnL is shown for binary trading ($0.96 win / $1.00 loss)
 - Emoji used purposefully for visual hierarchy, not decoration
-- Modular design for future Polymarket integration
+- Polymarket trade and status formatters included
 """
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -449,11 +449,18 @@ def format_start(chat_id: int) -> str:
         f"\u2696\ufe0f Breakeven: <code>51.04%</code> win rate",
         "",
         "\U0001f4dd <b>Commands</b>",
-        "  /stats     \U0001f4ca  Performance dashboard",
-        "  /recent    \U0001f4cb  Last 10 signals",
-        "  /status    \u2699\ufe0f   Bot &amp; model info",
-        "  /retrain   \U0001f504  Force model retrain",
-        "  /help      \u2753  Command reference",
+        "  /stats        \U0001f4ca  Performance dashboard",
+        "  /recent       \U0001f4cb  Last 10 signals",
+        "  /status       \u2699\ufe0f   Bot &amp; model info",
+        "  /retrain      \U0001f504  Force model retrain",
+        "  /help         \u2753  Command reference",
+        "",
+        "\U0001f4b0 <b>Polymarket</b>",
+        "  /autotrade    Toggle auto-trading",
+        "  /setamount    Set trade amount",
+        "  /balance      Wallet balance",
+        "  /positions    Open positions",
+        "  /pmstatus     Connection status",
         "",
         f"\U0001f194 Chat ID: <code>{chat_id}</code>",
     ]
@@ -468,13 +475,13 @@ def format_start(chat_id: int) -> str:
 def format_help() -> str:
     """Format the /help message."""
     lines = [
-        "\u2753 <b>AprilXG v2 — Help</b>",
+        "\u2753 <b>AprilXG v2 \u2014 Help</b>",
         "",
         "This bot predicts the direction of the next",
         "BTC 5-minute candle using an XGBoost ML model",
         "with multi-timeframe feature engineering.",
         "",
-        "\U0001f4dd <b>Commands</b>",
+        "\U0001f4dd <b>Signal Commands</b>",
         "  /stats     \U0001f4ca  Full performance stats (W/L, PnL, streaks)",
         "  /recent    \U0001f4cb  Last 10 signals with results",
         "  /status    \u2699\ufe0f   Model &amp; bot status",
@@ -482,9 +489,16 @@ def format_help() -> str:
         "  /start     \U0001f680  Show welcome &amp; chat ID",
         "  /help      \u2753  This help message",
         "",
+        "\U0001f4b0 <b>Polymarket Trading</b>",
+        "  /autotrade   Toggle auto-trading ON/OFF",
+        "  /setamount   Set USDC trade amount (e.g. /setamount 1.50)",
+        "  /balance     Check wallet USDC balance",
+        "  /positions   View open Polymarket positions",
+        "  /pmstatus    Polymarket connection &amp; config status",
+        "",
         "\U0001f4a1 <b>Signal Strength</b>",
-        f"  \u26a1 <b>STRONG</b> — Confidence \u2265 60%",
-        f"  \U0001f7e2 <b>NORMAL</b> — Confidence 55-60%",
+        f"  \u26a1 <b>STRONG</b> \u2014 Confidence \u2265 60%",
+        f"  \U0001f7e2 <b>NORMAL</b> \u2014 Confidence 55-60%",
         "  Signals below 55% are skipped.",
         "",
         "\U0001f4b0 <b>Payouts</b>",
@@ -561,6 +575,8 @@ def format_startup(
     retrain_gate: float,
     tracked_signals: int,
     symbol: str,
+    polymarket_enabled: bool = False,
+    autotrade_on: bool = False,
 ) -> str:
     """Format bot startup/online message."""
     days = train_candles * 5 // 1440
@@ -576,10 +592,20 @@ def format_startup(
         f"  \U0001f6e1\ufe0f Gate         <code>{retrain_gate:.3f} min improvement</code>",
         f"  \U0001f4e1 Signals      <code>{tracked_signals} tracked</code>",
         f"  \U0001f4b9 Symbol       <code>{symbol}</code>",
+    ]
+
+    # Polymarket status line
+    if polymarket_enabled:
+        at_str = "ON" if autotrade_on else "OFF"
+        lines.append(f"  \U0001f4b0 Polymarket   <code>Connected (autotrade {at_str})</code>")
+    else:
+        lines.append(f"  \U0001f4b0 Polymarket   <code>Disabled</code>")
+
+    lines.extend([
         "",
         "Signals posted automatically.",
         "Type /help for commands.",
-    ]
+    ])
 
     return "\n".join(lines)
 
@@ -624,3 +650,201 @@ def format_training_failed(error: str) -> str:
     """Format training failure notification."""
     safe_error = _escape_html(error[:200])
     return f"\u274c <b>Model training failed</b>\n\n<code>{safe_error}</code>"
+
+
+# ============================================================
+# POLYMARKET TRADE FORMATTERS
+# ============================================================
+
+def format_trade_execution(trade_data: dict) -> str:
+    """Format a Polymarket trade execution confirmation.
+
+    Args:
+        trade_data: Dict with order_id, direction, amount, price, size,
+                    slot_dt, question, confidence, strength, etc.
+
+    Returns:
+        HTML-formatted message string
+    """
+    direction = trade_data.get("direction", "?")
+    amount = trade_data.get("amount", 0)
+    price = trade_data.get("price", 0)
+    size = trade_data.get("size", 0)
+    order_id = trade_data.get("order_id", "N/A")
+    slot_dt = trade_data.get("slot_dt", "")
+    confidence = trade_data.get("confidence", 0)
+    strength = trade_data.get("strength", "NORMAL")
+    status = trade_data.get("status", "PLACED")
+
+    # Direction styling
+    if direction == "UP":
+        dir_emoji = "\U0001f7e2"  # green circle
+        side_label = "YES (Up)"
+    else:
+        dir_emoji = "\U0001f534"  # red circle
+        side_label = "NO (Down)"
+
+    strength_badge = "  \u26a1" if strength == "STRONG" else ""
+
+    # Slot time formatting
+    slot_str = ""
+    if slot_dt:
+        try:
+            dt = datetime.fromisoformat(slot_dt)
+            end = dt + timedelta(minutes=5)
+            slot_str = f"{dt.strftime('%H:%M')} - {end.strftime('%H:%M')} UTC"
+        except Exception:
+            slot_str = str(slot_dt)[:19]
+
+    lines = [
+        f"{dir_emoji} <b>TRADE PLACED</b>{strength_badge}",
+        "",
+        f"  Side        <b>{side_label}</b>",
+        f"  Amount      <code>${amount:.2f} USDC</code>",
+        f"  Price       <code>{price:.4f}</code>",
+        f"  Size        <code>{size:.2f} shares</code>",
+    ]
+
+    if slot_str:
+        lines.append(f"  Slot        <code>{slot_str}</code>")
+
+    lines.extend([
+        f"  Confidence  <code>{confidence:.1%}</code>",
+        f"  Status      <code>{_escape_html(status)}</code>",
+        f"  Order       <code>{_escape_html(str(order_id)[:16])}</code>",
+    ])
+
+    return "\n".join(lines)
+
+
+def format_trade_error(error: str) -> str:
+    """Format a trade execution error."""
+    safe_error = _escape_html(str(error)[:300])
+    return (
+        f"\u274c <b>Trade Error</b>\n\n"
+        f"<code>{safe_error}</code>\n\n"
+        f"Auto-trading continues. Check /pmstatus for details."
+    )
+
+
+def format_balance(balance: float) -> str:
+    """Format Polymarket wallet balance display."""
+    return (
+        f"\U0001f4b0 <b>Polymarket Balance</b>\n\n"
+        f"  USDC: <code>${balance:.2f}</code>"
+    )
+
+
+def format_positions(positions: list) -> str:
+    """Format open Polymarket positions.
+
+    Args:
+        positions: List of position dicts with market, outcome, size,
+                   avg_price, current_value, pnl fields.
+    """
+    if not positions:
+        return "\U0001f4cb <b>Open Positions</b>\n\nNo open positions."
+
+    lines = ["\U0001f4cb <b>Open Positions</b>", ""]
+
+    for i, pos in enumerate(positions, 1):
+        market = _escape_html(str(pos.get("market", "Unknown"))[:50])
+        outcome = pos.get("outcome", "?")
+        size = pos.get("size", 0)
+        avg_price = pos.get("avg_price", 0)
+        current_value = pos.get("current_value", 0)
+        pnl = pos.get("pnl", 0)
+
+        pnl_sign = "+" if pnl >= 0 else ""
+        pnl_emoji = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
+
+        lines.extend([
+            f"  <b>{i}.</b> {market}",
+            f"     {outcome}  |  <code>{size:.2f}</code> shares @ <code>{avg_price:.4f}</code>",
+            f"     {pnl_emoji} Value: <code>${current_value:.2f}</code>  PnL: <code>{pnl_sign}${abs(pnl):.2f}</code>",
+            "",
+        ])
+
+    return "\n".join(lines)
+
+
+def format_pm_status(
+    connected: bool,
+    wallet: str,
+    balance: Optional[float],
+    autotrade_on: bool,
+    trade_amount: float,
+    session_trades: int,
+    error: Optional[str] = None,
+) -> str:
+    """Format full Polymarket connection status card."""
+    conn_emoji = "\U0001f7e2" if connected else "\U0001f534"
+    conn_label = "Connected" if connected else "Disconnected"
+    at_emoji = "\U0001f7e2" if autotrade_on else "\u26ab"
+    at_label = "ON" if autotrade_on else "OFF"
+
+    balance_str = f"${balance:.2f}" if balance is not None else "N/A"
+    wallet_short = f"{wallet[:6]}...{wallet[-4:]}" if wallet and len(wallet) > 10 else (wallet or "N/A")
+
+    lines = [
+        "\U0001f4b0 <b>POLYMARKET STATUS</b>",
+        "",
+        f"  {conn_emoji} Connection   <b>{conn_label}</b>",
+        f"  \U0001f4bc Wallet       <code>{_escape_html(wallet_short)}</code>",
+        f"  \U0001f4b5 Balance      <code>{balance_str}</code>",
+        "",
+        f"  {at_emoji} Auto-Trade   <b>{at_label}</b>",
+        f"  \U0001f4b0 Trade Amt    <code>${trade_amount:.2f} USDC</code>",
+        f"  \U0001f4ca Trades       <code>{session_trades} this session</code>",
+    ]
+
+    if error:
+        safe_error = _escape_html(str(error)[:150])
+        lines.extend([
+            "",
+            f"  \u26a0\ufe0f Error: <code>{safe_error}</code>",
+        ])
+
+    return "\n".join(lines)
+
+
+def format_autotrade_toggle(enabled: bool, amount: float) -> str:
+    """Format autotrade toggle confirmation."""
+    if enabled:
+        return (
+            f"\U0001f7e2 <b>Auto-Trading ON</b>\n\n"
+            f"Trade amount: <code>${amount:.2f} USDC</code> per signal.\n"
+            f"Trades will execute automatically on each signal."
+        )
+    else:
+        return (
+            f"\u26ab <b>Auto-Trading OFF</b>\n\n"
+            f"Signals will be sent but no trades will be placed."
+        )
+
+
+def format_set_amount(result: dict) -> str:
+    """Format set-amount confirmation.
+
+    Args:
+        result: Dict with success (bool), amount (float), message (str)
+    """
+    if result.get("success"):
+        amount = result.get("amount", 0)
+        return (
+            f"\u2705 <b>Trade amount updated</b>\n\n"
+            f"New amount: <code>${amount:.2f} USDC</code> per trade."
+        )
+    else:
+        msg = _escape_html(result.get("message", "Unknown error"))
+        return f"\u274c <b>Invalid amount</b>\n\n{msg}"
+
+
+def format_pm_not_configured() -> str:
+    """Format message when Polymarket is not configured."""
+    return (
+        "\u26a0\ufe0f <b>Polymarket Not Configured</b>\n\n"
+        "Set <code>POLYMARKET_PRIVATE_KEY</code> environment variable "
+        "to enable Polymarket trading features.\n\n"
+        "See /help for details."
+    )

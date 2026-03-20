@@ -9,6 +9,13 @@ UI/UX v2:
 - All messages use HTML parse_mode for rich formatting
 - Message formatting delegated to formatters module
 - Commands return formatted responses via callbacks
+
+Polymarket commands:
+- /autotrade — Toggle auto-trading ON/OFF
+- /setamount <value> — Set trade amount in USDC
+- /balance — Fetch Polymarket USDC wallet balance
+- /positions — Show current open positions
+- /pmstatus — Full Polymarket connection status
 """
 import asyncio
 import logging
@@ -44,6 +51,12 @@ class TelegramBot:
         self._recent_callback: Optional[Callable[[], str]] = None
         self._status_callback: Optional[Callable[[], Awaitable[str]]] = None
         self._retrain_callback: Optional[Callable[[], Awaitable[str]]] = None
+        # Polymarket callbacks
+        self._autotrade_toggle_callback: Optional[Callable[[], Awaitable[str]]] = None
+        self._set_amount_callback: Optional[Callable[[float], Awaitable[str]]] = None
+        self._balance_callback: Optional[Callable[[], Awaitable[str]]] = None
+        self._positions_callback: Optional[Callable[[], Awaitable[str]]] = None
+        self._pmstatus_callback: Optional[Callable[[], Awaitable[str]]] = None
 
     def set_callbacks(
         self,
@@ -51,12 +64,22 @@ class TelegramBot:
         recent_cb: Optional[Callable[[], str]] = None,
         status_cb: Optional[Callable[[], Awaitable[str]]] = None,
         retrain_cb: Optional[Callable[[], Awaitable[str]]] = None,
+        autotrade_toggle_cb: Optional[Callable[[], Awaitable[str]]] = None,
+        set_amount_cb: Optional[Callable[[float], Awaitable[str]]] = None,
+        balance_cb: Optional[Callable[[], Awaitable[str]]] = None,
+        positions_cb: Optional[Callable[[], Awaitable[str]]] = None,
+        pmstatus_cb: Optional[Callable[[], Awaitable[str]]] = None,
     ):
         """Set callback functions for bot commands."""
         self._stats_callback = stats_cb
         self._recent_callback = recent_cb
         self._status_callback = status_cb
         self._retrain_callback = retrain_cb
+        self._autotrade_toggle_callback = autotrade_toggle_cb
+        self._set_amount_callback = set_amount_cb
+        self._balance_callback = balance_cb
+        self._positions_callback = positions_cb
+        self._pmstatus_callback = pmstatus_cb
 
     async def initialize(self):
         """Initialize the bot and register handlers."""
@@ -78,6 +101,12 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("recent", self._cmd_recent))
         self.application.add_handler(CommandHandler("status", self._cmd_status))
         self.application.add_handler(CommandHandler("retrain", self._cmd_retrain))
+        # Polymarket commands
+        self.application.add_handler(CommandHandler("autotrade", self._cmd_autotrade))
+        self.application.add_handler(CommandHandler("setamount", self._cmd_setamount))
+        self.application.add_handler(CommandHandler("balance", self._cmd_balance))
+        self.application.add_handler(CommandHandler("positions", self._cmd_positions))
+        self.application.add_handler(CommandHandler("pmstatus", self._cmd_pmstatus))
 
         await self.application.initialize()
         logger.info("Telegram bot initialized")
@@ -232,4 +261,62 @@ class TelegramBot:
             text = await self._retrain_callback()
         else:
             text = "\U0001f504 Retrain not available."
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    # --- Polymarket Command Handlers ---
+
+    async def _cmd_autotrade(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if self._autotrade_toggle_callback:
+            text = await self._autotrade_toggle_callback()
+        else:
+            text = formatters.format_pm_not_configured()
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def _cmd_setamount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._set_amount_callback:
+            await update.message.reply_text(
+                formatters.format_pm_not_configured(), parse_mode="HTML"
+            )
+            return
+
+        # Parse amount from command arguments
+        if not context.args:
+            await update.message.reply_text(
+                "\u26a0\ufe0f Usage: <code>/setamount 1.50</code>\n\n"
+                "Set the USDC amount per trade (0.10 - 100.00).",
+                parse_mode="HTML",
+            )
+            return
+
+        try:
+            amount = float(context.args[0])
+        except (ValueError, IndexError):
+            await update.message.reply_text(
+                "\u274c Invalid amount. Use a number like <code>/setamount 2.50</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        text = await self._set_amount_callback(amount)
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if self._balance_callback:
+            text = await self._balance_callback()
+        else:
+            text = formatters.format_pm_not_configured()
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def _cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if self._positions_callback:
+            text = await self._positions_callback()
+        else:
+            text = formatters.format_pm_not_configured()
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def _cmd_pmstatus(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if self._pmstatus_callback:
+            text = await self._pmstatus_callback()
+        else:
+            text = formatters.format_pm_not_configured()
         await update.message.reply_text(text, parse_mode="HTML")

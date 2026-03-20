@@ -91,11 +91,21 @@ class TelegramConfig:
 
 
 @dataclass
+class PolymarketConfig:
+    """Polymarket auto-trading configuration."""
+    private_key: str = ""          # Wallet private key (hex)
+    funder_address: str = ""       # Funder/proxy wallet address
+    signature_type: int = 2        # Signature type (0, 1, or 2)
+    enabled: bool = False           # Derived: True if private_key is set
+
+
+@dataclass
 class BotConfig:
     """Main bot configuration."""
     mexc: MEXCConfig = field(default_factory=MEXCConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    polymarket: PolymarketConfig = field(default_factory=PolymarketConfig)
     # Timing
     prediction_lead_seconds: int = 15  # Predict N seconds before candle close
     main_loop_interval: int = 5  # Check every N seconds
@@ -139,14 +149,24 @@ class BotConfig:
             )
             config.model.train_candles = MIN_TRAIN_CANDLES
 
+        # Polymarket configuration (all optional — bot works without them)
+        config.polymarket.private_key = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
+        config.polymarket.funder_address = os.environ.get("POLYMARKET_FUNDER_ADDRESS", "")
+        if os.environ.get("POLYMARKET_SIGNATURE_TYPE"):
+            config.polymarket.signature_type = int(os.environ["POLYMARKET_SIGNATURE_TYPE"])
+        # Derived flag: Polymarket is enabled if private key is provided
+        config.polymarket.enabled = bool(config.polymarket.private_key)
+
         # Log final resolved config for diagnostics
+        pm_status = "ON" if config.polymarket.enabled else "OFF"
         logger.info(
             f"Config loaded: train_candles={config.model.train_candles} "
             f"(~{config.model.train_candles * 5 // 1440} days of 5m data), "
             f"retrain_interval={config.model.retrain_interval_hours}h, "
             f"confidence_min={config.model.confidence_min}, "
             f"optuna={'ON' if config.model.enable_optuna_tuning else 'OFF'} "
-            f"({config.model.optuna_n_trials} trials, {config.model.optuna_timeout_seconds}s timeout)"
+            f"({config.model.optuna_n_trials} trials, {config.model.optuna_timeout_seconds}s timeout), "
+            f"polymarket={pm_status}"
         )
 
         return config

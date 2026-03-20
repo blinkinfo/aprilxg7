@@ -1,18 +1,20 @@
 """Comprehensive test suite for BTC Signal Bot (aprilxg v2).
 Tests: MEXC API, feature engineering (normalized + regime), model training (Optuna + retraining gate),
-       confidence filtering, signal tracking, prediction.
+       confidence filtering, signal tracking, prediction, Polymarket integration.
 """
 import asyncio
 import sys
 import os
 import json
+import shutil
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.config import BotConfig, MEXCConfig, ModelConfig
+from src.config import BotConfig, MEXCConfig, ModelConfig, PolymarketConfig
 from src.data_fetcher import MEXCFetcher
 from src.features import FeatureEngineer
 from src.model import PredictionModel
@@ -368,7 +370,6 @@ def test_signal_tracker(results: TestResults):
         results.ok("Persistence: signals correctly saved and reloaded")
 
         # Cleanup
-        import shutil
         shutil.rmtree(test_dir, ignore_errors=True)
 
     except Exception as e:
@@ -377,8 +378,8 @@ def test_signal_tracker(results: TestResults):
 
 
 def test_config(results: TestResults):
-    """Test configuration loading including v2 fields."""
-    print("\n--- Testing Configuration (v2) ---")
+    """Test configuration loading including v2 fields and Polymarket config."""
+    print("\n--- Testing Configuration (v2 + Polymarket) ---")
     try:
         # Test default config
         config = BotConfig()
@@ -392,7 +393,34 @@ def test_config(results: TestResults):
         assert config.prediction_lead_seconds == 15, f"prediction_lead_seconds should be 15 (BY DESIGN)"
         results.ok("Default v2 config loaded correctly (incl. 15-sec lead time)")
 
-        # Test env override
+        # Test Polymarket default config
+        assert config.polymarket.private_key == "", "Polymarket key should default to empty"
+        assert config.polymarket.funder_address == "", "Funder address should default to empty"
+        assert config.polymarket.signature_type == 2, f"Signature type should default to 2, got {config.polymarket.signature_type}"
+        assert config.polymarket.enabled is False, "Polymarket should be disabled by default"
+        results.ok("Polymarket default config: disabled, sig_type=2")
+
+        # Test Polymarket env override
+        os.environ["POLYMARKET_PRIVATE_KEY"] = "0xdeadbeef"
+        os.environ["POLYMARKET_FUNDER_ADDRESS"] = "0x1234567890abcdef"
+        os.environ["POLYMARKET_SIGNATURE_TYPE"] = "1"
+        config_pm = BotConfig.from_env()
+        assert config_pm.polymarket.private_key == "0xdeadbeef", "Private key not set from env"
+        assert config_pm.polymarket.funder_address == "0x1234567890abcdef", "Funder address not set from env"
+        assert config_pm.polymarket.signature_type == 1, f"Signature type should be 1, got {config_pm.polymarket.signature_type}"
+        assert config_pm.polymarket.enabled is True, "Polymarket should be enabled when key is set"
+        results.ok("Polymarket env config: enabled when key set, sig_type=1")
+
+        # Cleanup Polymarket env vars
+        for key in ["POLYMARKET_PRIVATE_KEY", "POLYMARKET_FUNDER_ADDRESS", "POLYMARKET_SIGNATURE_TYPE"]:
+            del os.environ[key]
+
+        # Verify disabled after env cleanup
+        config_no_pm = BotConfig.from_env()
+        assert config_no_pm.polymarket.enabled is False, "Polymarket should be disabled without key"
+        results.ok("Polymarket disabled when env vars removed")
+
+        # Test env override for other vars
         os.environ["TRADING_SYMBOL"] = "ETHUSDT"
         os.environ["PREDICTION_THRESHOLD"] = "0.58"
         os.environ["CONFIDENCE_MIN"] = "0.56"
@@ -452,6 +480,360 @@ def test_15sec_timing(results: TestResults):
         traceback.print_exc()
 
 
+def test_auto_trader(results: TestResults):
+    """Test AutoTrader toggle, amount settings, and duplicate prevention."""
+    print("\n--- Testing AutoTrader ---")
+    test_dir = "/tmp/test_autotrader"
+    os.makedirs(test_dir, exist_ok=True)
+
+    try:
+        from src.auto_trader import AutoTrader, MIN_TRADE_AMOUNT, MAX_TRADE_AMOUNT, DEFAULT_TRADE_AMOUNT
+
+        # Create a mock PolymarketClient
+        mock_pm = MagicMock()
+        mock_pm.is_initialized = True
+        mock_pm.wallet_address = "0xMOCKWALLET"
+
+        trader = AutoTrader(polymarket_client=mock_pm, data_dir=test_dir)
+
+        # Test 1: Default state
+        assert trader.enabled is False, "AutoTrader should start disabled"
+        assert trader.trade_amount == DEFAULT_TRADE_AMOUNT, f"Default amount should be {DEFAULT_TRADE_AMOUNT}"
+        results.ok(f"Default state: disabled, amount={DEFAULT_TRADE_AMOUNT} USDC")
+
+        # Test 2: Toggle on
+        result = trader.toggle()
+        assert result["enabled"] is True, "Toggle should enable"
+        assert trader.enabled is True
+        results.ok("Toggle ON: enabled=True")
+
+        # Test 3: Toggle off
+        result = trader.toggle()
+        assert result["enabled"] is False, "Toggle should disable"
+        assert trader.enabled is False
+        results.ok("Toggle OFF: enabled=False")
+
+        # Test 4: Toggle with explicit value
+        result = trader.toggle(on=True)
+        assert result["enabled"] is True
+        result = trader.toggle(on=True)  # Already on, should stay on
+        assert result["enabled"] is True
+        results.ok("Toggle with explicit on=True works")
+
+        # Test 5: Set valid trade amount
+        result = trader.set_trade_amount(2.50)
+        assert result["success"] is True
+        assert result["amount"] == 2.50
+        assert trader.trade_amount == 2.50
+        results.ok("Set amount 2.50 USDC: success")
+
+        # Test 6: Amount too low
+        result = trader.set_trade_amount(0.05)
+        assert result["success"] is False
+        assert trader.trade_amount == 2.50, "Amount should not change on failure"
+        results.ok(f"Amount 0.05 rejected (min={MIN_TRADE_AMOUNT})")
+
+        # Test 7: Amount too high
+        result = trader.set_trade_amount(500.0)
+        assert result["success"] is False
+        assert trader.trade_amount == 2.50, "Amount should not change on failure"
+        results.ok(f"Amount 500.00 rejected (max={MAX_TRADE_AMOUNT})")
+
+        # Test 8: Config persistence
+        trader2 = AutoTrader(polymarket_client=mock_pm, data_dir=test_dir)
+        assert trader2.enabled is True, "Enabled state should persist"
+        assert trader2.trade_amount == 2.50, "Amount should persist"
+        results.ok("Config persists across instances")
+
+        # Test 9: Get config
+        config = trader.get_config()
+        assert config["enabled"] is True
+        assert config["trade_amount"] == 2.50
+        assert config["session_trades"] == 0
+        results.ok("get_config returns correct state")
+
+        # Test 10: Edge amount values
+        result = trader.set_trade_amount(MIN_TRADE_AMOUNT)
+        assert result["success"] is True, f"Min amount {MIN_TRADE_AMOUNT} should be valid"
+        result = trader.set_trade_amount(MAX_TRADE_AMOUNT)
+        assert result["success"] is True, f"Max amount {MAX_TRADE_AMOUNT} should be valid"
+        results.ok(f"Edge amounts accepted: min={MIN_TRADE_AMOUNT}, max={MAX_TRADE_AMOUNT}")
+
+        # Cleanup
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+    except Exception as e:
+        results.fail("AutoTrader", f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+async def test_auto_trader_execute(results: TestResults):
+    """Test AutoTrader trade execution with mocked Polymarket client."""
+    print("\n--- Testing AutoTrader Trade Execution ---")
+    test_dir = "/tmp/test_autotrader_exec"
+    os.makedirs(test_dir, exist_ok=True)
+
+    try:
+        from src.auto_trader import AutoTrader
+        from src.polymarket_client import PolymarketClient
+
+        # Create a mock PolymarketClient
+        mock_pm = MagicMock()
+        mock_pm.is_initialized = True
+        mock_pm.wallet_address = "0xMOCKWALLET"
+
+        # Mock balance check
+        mock_pm.get_balance = AsyncMock(return_value={
+            "success": True,
+            "data": {"balance": 50.0},
+        })
+
+        # Mock place_trade
+        mock_pm.place_trade = AsyncMock(return_value={
+            "success": True,
+            "data": {
+                "order_id": "mock-order-123",
+                "direction": "UP",
+                "amount": 1.0,
+                "price": 0.55,
+                "size": 1.82,
+                "slot_dt": "2026-03-20T13:30:00+00:00",
+                "status": "MATCHED",
+            },
+        })
+
+        trader = AutoTrader(polymarket_client=mock_pm, data_dir=test_dir)
+        trader.toggle(on=True)
+
+        signal = {
+            "signal": "UP",
+            "confidence": 0.62,
+            "strength": "STRONG",
+            "current_price": 85000.0,
+            "prob_up": 0.62,
+            "prob_down": 0.38,
+        }
+
+        # Test 1: Execute trade when disabled
+        trader.toggle(on=False)
+        result = await trader.execute_trade(signal)
+        assert result["success"] is False
+        assert result["action"] == "skipped"
+        results.ok("Trade skipped when disabled")
+
+        # Test 2: Execute trade when enabled
+        trader.toggle(on=True)
+
+        # Mock the slot timestamp to avoid time-dependent issues
+        with patch.object(PolymarketClient, 'get_next_slot_timestamp', return_value=1742480400):
+            result = await trader.execute_trade(signal)
+            assert result["success"] is True, f"Trade should succeed, got error: {result.get('error')}"
+            assert result["action"] == "traded"
+            assert result["data"]["order_id"] == "mock-order-123"
+            assert result["data"]["confidence"] == 0.62
+            assert result["data"]["strength"] == "STRONG"
+            results.ok("Trade executed successfully with mock client")
+
+            # Test 3: Duplicate slot prevention
+            result2 = await trader.execute_trade(signal)
+            assert result2["success"] is False
+            assert result2["action"] == "skipped"
+            assert "Already traded" in result2["error"]
+            results.ok("Duplicate trade for same slot correctly prevented")
+
+        # Test 4: NEUTRAL signal skipped
+        neutral_signal = {"signal": "NEUTRAL", "confidence": 0.50, "strength": "SKIP"}
+        with patch.object(PolymarketClient, 'get_next_slot_timestamp', return_value=9999999999):
+            result = await trader.execute_trade(neutral_signal)
+            assert result["success"] is False
+            assert result["action"] == "skipped"
+            results.ok("NEUTRAL signal correctly skipped")
+
+        # Test 5: Insufficient balance
+        mock_pm.get_balance = AsyncMock(return_value={
+            "success": True,
+            "data": {"balance": 0.05},
+        })
+        with patch.object(PolymarketClient, 'get_next_slot_timestamp', return_value=1111111111):
+            result = await trader.execute_trade(signal)
+            assert result["success"] is False
+            assert result["action"] == "error"
+            assert "Insufficient" in result["error"]
+            results.ok("Insufficient balance correctly rejected")
+
+        # Test 6: Session stats
+        stats = trader.get_session_stats()
+        assert stats["total_trades"] == 1, f"Expected 1 session trade, got {stats['total_trades']}"
+        assert stats["directions"]["UP"] == 1
+        results.ok(f"Session stats: {stats['total_trades']} trade(s), UP={stats['directions']['UP']}")
+
+        # Cleanup
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+    except Exception as e:
+        results.fail("AutoTrader Execution", f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def test_slot_timestamp(results: TestResults):
+    """Test Polymarket slot timestamp calculation."""
+    print("\n--- Testing Slot Timestamp Calculation ---")
+    try:
+        from src.polymarket_client import PolymarketClient
+
+        # Test 1: get_next_slot_timestamp returns an integer
+        ts = PolymarketClient.get_next_slot_timestamp()
+        assert isinstance(ts, int), f"Slot timestamp should be int, got {type(ts)}"
+        results.ok(f"Slot timestamp is int: {ts}")
+
+        # Test 2: Timestamp is in the future (or very near future)
+        now = datetime.now(timezone.utc)
+        slot_dt = PolymarketClient.slot_to_datetime(ts)
+        assert slot_dt >= now - timedelta(minutes=5), "Slot should be near-future"
+        results.ok(f"Slot datetime: {slot_dt.isoformat()} (valid near-future)")
+
+        # Test 3: Slot is aligned to 5-minute boundary
+        assert slot_dt.second == 0, f"Slot should have 0 seconds, got {slot_dt.second}"
+        assert slot_dt.minute % 5 == 0, f"Slot minute should be 5-min aligned, got {slot_dt.minute}"
+        results.ok(f"Slot aligned to 5-min boundary: {slot_dt.strftime('%H:%M')}")
+
+        # Test 4: slot_to_datetime roundtrip
+        ts2 = int(slot_dt.timestamp())
+        assert ts == ts2, f"Roundtrip mismatch: {ts} vs {ts2}"
+        results.ok("Slot timestamp roundtrip: consistent")
+
+    except Exception as e:
+        results.fail("Slot Timestamp", f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+
+
+def test_formatters_polymarket(results: TestResults):
+    """Test Polymarket-related message formatters."""
+    print("\n--- Testing Polymarket Formatters ---")
+    try:
+        from src import formatters
+
+        # Test 1: format_trade_execution
+        trade_data = {
+            "order_id": "abc123",
+            "direction": "UP",
+            "amount": 1.50,
+            "price": 0.55,
+            "size": 2.73,
+            "slot_dt": "2026-03-20T13:30:00+00:00",
+            "confidence": 0.62,
+            "strength": "STRONG",
+            "status": "MATCHED",
+        }
+        msg = formatters.format_trade_execution(trade_data)
+        assert "TRADE PLACED" in msg, "Should contain TRADE PLACED header"
+        assert "YES (Up)" in msg, "Should show YES (Up) for UP direction"
+        assert "$1.50" in msg, "Should show amount"
+        assert "abc123" in msg, "Should show order ID"
+        results.ok("format_trade_execution: UP trade formatted correctly")
+
+        # Test 2: DOWN trade
+        trade_data["direction"] = "DOWN"
+        msg_down = formatters.format_trade_execution(trade_data)
+        assert "NO (Down)" in msg_down, "Should show NO (Down) for DOWN direction"
+        results.ok("format_trade_execution: DOWN trade formatted correctly")
+
+        # Test 3: format_trade_error
+        msg_err = formatters.format_trade_error("Connection timeout")
+        assert "Trade Error" in msg_err
+        assert "Connection timeout" in msg_err
+        results.ok("format_trade_error: error formatted correctly")
+
+        # Test 4: format_balance
+        msg_bal = formatters.format_balance(42.50)
+        assert "$42.50" in msg_bal
+        assert "Balance" in msg_bal
+        results.ok("format_balance: balance formatted correctly")
+
+        # Test 5: format_positions (empty)
+        msg_pos_empty = formatters.format_positions([])
+        assert "No open positions" in msg_pos_empty
+        results.ok("format_positions: empty list handled")
+
+        # Test 6: format_positions (with data)
+        positions = [
+            {"market": "BTC Up", "outcome": "YES", "size": 5.0, "avg_price": 0.55, "current_value": 3.00, "pnl": 0.25},
+            {"market": "BTC Down", "outcome": "NO", "size": 3.0, "avg_price": 0.45, "current_value": 1.50, "pnl": -0.15},
+        ]
+        msg_pos = formatters.format_positions(positions)
+        assert "BTC Up" in msg_pos
+        assert "BTC Down" in msg_pos
+        results.ok("format_positions: positions formatted correctly")
+
+        # Test 7: format_pm_status
+        msg_status = formatters.format_pm_status(
+            connected=True, wallet="0x1234567890abcdef1234567890abcdef12345678",
+            balance=25.00, autotrade_on=True, trade_amount=1.50, session_trades=3,
+        )
+        assert "Connected" in msg_status
+        assert "0x1234...5678" in msg_status, "Wallet should be shortened"
+        assert "$25.00" in msg_status
+        assert "ON" in msg_status
+        assert "$1.50" in msg_status
+        results.ok("format_pm_status: full status card formatted")
+
+        # Test 8: format_pm_status disconnected with error
+        msg_disc = formatters.format_pm_status(
+            connected=False, wallet="", balance=None,
+            autotrade_on=False, trade_amount=1.0, session_trades=0, error="API timeout",
+        )
+        assert "Disconnected" in msg_disc
+        assert "API timeout" in msg_disc
+        results.ok("format_pm_status: disconnected + error formatted")
+
+        # Test 9: format_autotrade_toggle
+        msg_on = formatters.format_autotrade_toggle(True, 2.50)
+        assert "ON" in msg_on
+        assert "$2.50" in msg_on
+        msg_off = formatters.format_autotrade_toggle(False, 2.50)
+        assert "OFF" in msg_off
+        results.ok("format_autotrade_toggle: on/off formatted")
+
+        # Test 10: format_set_amount
+        msg_set = formatters.format_set_amount({"success": True, "amount": 3.00, "message": "ok"})
+        assert "$3.00" in msg_set
+        assert "updated" in msg_set
+        msg_fail = formatters.format_set_amount({"success": False, "amount": 0.05, "message": "Too low"})
+        assert "Invalid" in msg_fail or "Too low" in msg_fail
+        results.ok("format_set_amount: success and failure formatted")
+
+        # Test 11: format_pm_not_configured
+        msg_nc = formatters.format_pm_not_configured()
+        assert "Not Configured" in msg_nc
+        assert "POLYMARKET_PRIVATE_KEY" in msg_nc
+        results.ok("format_pm_not_configured: message formatted")
+
+        # Test 12: format_startup with Polymarket
+        msg_startup = formatters.format_startup(
+            model_accuracy=0.55, confidence_min=0.55, train_candles=43200,
+            optuna_enabled=True, retrain_gate=0.002, tracked_signals=10,
+            symbol="BTCUSDT", polymarket_enabled=True, autotrade_on=True,
+        )
+        assert "Polymarket" in msg_startup
+        assert "autotrade ON" in msg_startup
+        results.ok("format_startup: Polymarket status line included")
+
+        # Test 13: format_help includes Polymarket commands
+        msg_help = formatters.format_help()
+        assert "/autotrade" in msg_help
+        assert "/setamount" in msg_help
+        assert "/balance" in msg_help
+        assert "/positions" in msg_help
+        assert "/pmstatus" in msg_help
+        results.ok("format_help: all Polymarket commands listed")
+
+    except Exception as e:
+        results.fail("Polymarket Formatters", f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+
+
 async def run_all_tests():
     """Run all tests."""
     print("="*50)
@@ -461,7 +843,7 @@ async def run_all_tests():
 
     results = TestResults()
 
-    # Test 1: Config (v2)
+    # Test 1: Config (v2 + Polymarket)
     test_config(results)
 
     # Test 2: 15-second timing preservation
@@ -494,11 +876,23 @@ async def run_all_tests():
     # Test 6: Signal Tracker (independent of API)
     test_signal_tracker(results)
 
+    # Test 7: Polymarket slot timestamp calculation
+    test_slot_timestamp(results)
+
+    # Test 8: AutoTrader toggle, amount, config
+    test_auto_trader(results)
+
+    # Test 9: AutoTrader trade execution (mocked)
+    await test_auto_trader_execute(results)
+
+    # Test 10: Polymarket formatters
+    test_formatters_polymarket(results)
+
     # Final summary
     all_passed = results.summary()
 
     if all_passed:
-        print("\nAll tests PASSED! aprilxg v2 is ready for deployment.")
+        print("\nAll tests PASSED! aprilxg v2 + Polymarket is ready for deployment.")
     else:
         print(f"\n{results.failed} test(s) FAILED. Review errors above.")
 

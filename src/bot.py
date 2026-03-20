@@ -2,6 +2,7 @@
 
 Preserves the 15-second pre-signal timing by design.
 Integrates: retraining gate messaging, signal strength labels, Optuna status.
+Polymarket auto-trading: optional, purely additive after signal flow.
 
 Fixes applied:
 - Signal predicts the NEXT candle (current_slot + 5min), not the current one
@@ -30,6 +31,8 @@ from .model import PredictionModel
 from .signal_tracker import SignalTracker
 from .telegram_bot import TelegramBot
 from . import formatters
+from .polymarket_client import PolymarketClient
+from .auto_trader import AutoTrader
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +76,9 @@ class SignalBot:
         self._running = False
         self._last_signal_candle_ts = None  # Prevent duplicate signals per candle
         self._last_resolved_candle_ts = None  # Prevent double-resolution per candle
+        # Polymarket auto-trading (initialized in start() if configured)
+        self.polymarket_client = None
+        self.auto_trader = None
 
     async def start(self):
         """Start the bot."""
@@ -91,8 +97,37 @@ class SignalBot:
             recent_cb=self._get_recent_text,
             status_cb=self._get_status_text,
             retrain_cb=self._retrain_model,
+            autotrade_toggle_cb=self._toggle_autotrade,
+            set_amount_cb=self._set_trade_amount,
+            balance_cb=self._get_balance_text,
+            positions_cb=self._get_positions_text,
+            pmstatus_cb=self._get_pmstatus_text,
         )
         await self.telegram.start_polling()
+
+        # Initialize Polymarket auto-trading (if configured)
+        if self.config.polymarket.enabled:
+            logger.info("Polymarket integration enabled, initializing...")
+            self.polymarket_client = PolymarketClient(
+                private_key=self.config.polymarket.private_key,
+                funder_address=self.config.polymarket.funder_address,
+                signature_type=self.config.polymarket.signature_type,
+            )
+            init_result = await self.polymarket_client.initialize()
+            if init_result["success"]:
+                self.auto_trader = AutoTrader(
+                    polymarket_client=self.polymarket_client,
+                    data_dir=self.config.data_dir,
+                )
+                logger.info(
+                    f"Polymarket ready: autotrade={'ON' if self.auto_trader.enabled else 'OFF'}, "
+                    f"amount={self.auto_trader.trade_amount} USDC"
+                )
+            else:
+                logger.error(f"Polymarket init failed: {init_result['error']}")
+                self.polymarket_client = None
+        else:
+            logger.info("Polymarket integration disabled (no POLYMARKET_PRIVATE_KEY)")
 
         # Try loading existing model
         loaded = self.model.load(self.config.model_dir)
@@ -114,6 +149,8 @@ class SignalBot:
             retrain_gate=self.config.model.retrain_min_improvement,
             tracked_signals=len(self.tracker.signals),
             symbol=self.config.mexc.symbol,
+            polymarket_enabled=self.config.polymarket.enabled,
+            autotrade_on=self.auto_trader.enabled if self.auto_trader else False,
         )
         await self.telegram.send_message(msg)
 
@@ -127,6 +164,8 @@ class SignalBot:
         self._running = False
         await self.telegram.send_message(formatters.format_shutdown())
         await self.telegram.stop()
+        if self.polymarket_client:
+            await self.polymarket_client.close()
         await self.fetcher.close()
         self.model.save(self.config.model_dir)
         logger.info("Bot stopped")
@@ -237,6 +276,23 @@ class SignalBot:
                     f"@ ${prediction['current_price']:,.2f} "
                     f"(predicting next slot={next_slot_iso})"
                 )
+
+                # --- Polymarket Auto-Trade (purely additive) ---
+                if self.auto_trader and self.auto_trader.enabled:
+                    try:
+                        trade_result = await self.auto_trader.execute_trade(prediction)
+                        if trade_result["success"]:
+                            trade_msg = formatters.format_trade_execution(trade_result["data"])
+                            await self.telegram.send_message(trade_msg)
+                        elif trade_result["action"] == "error":
+                            err_msg = formatters.format_trade_error(trade_result["error"])
+                            await self.telegram.send_message(err_msg)
+                        # "skipped" actions are silent (disabled, duplicate, etc.)
+                    except Exception as te:
+                        logger.error(f"Auto-trade error: {te}", exc_info=True)
+                        await self.telegram.send_message(
+                            formatters.format_trade_error(str(te))
+                        )
             else:
                 logger.info(
                     f"No signal: confidence below {self.config.model.confidence_min} "
@@ -520,6 +576,51 @@ class SignalBot:
             return formatters.format_retrain_complete(self.model.val_accuracy)
         except Exception as e:
             return formatters.format_retrain_failed(str(e))
+
+    # --- Polymarket callback methods ---
+
+    async def _toggle_autotrade(self) -> str:
+        if not self.auto_trader:
+            return formatters.format_pm_not_configured()
+        result = self.auto_trader.toggle()
+        return formatters.format_autotrade_toggle(result["enabled"], self.auto_trader.trade_amount)
+
+    async def _set_trade_amount(self, amount: float) -> str:
+        if not self.auto_trader:
+            return formatters.format_pm_not_configured()
+        result = self.auto_trader.set_trade_amount(amount)
+        return formatters.format_set_amount(result)
+
+    async def _get_balance_text(self) -> str:
+        if not self.polymarket_client:
+            return formatters.format_pm_not_configured()
+        result = await self.polymarket_client.get_balance()
+        if result["success"]:
+            return formatters.format_balance(result["data"]["balance"])
+        return formatters.format_trade_error(result["error"])
+
+    async def _get_positions_text(self) -> str:
+        if not self.polymarket_client:
+            return formatters.format_pm_not_configured()
+        result = await self.polymarket_client.get_open_positions()
+        if result["success"]:
+            return formatters.format_positions(result["data"])
+        return formatters.format_trade_error(result["error"])
+
+    async def _get_pmstatus_text(self) -> str:
+        if not self.polymarket_client:
+            return formatters.format_pm_not_configured()
+        health = await self.polymarket_client.is_connected()
+        config = self.auto_trader.get_config() if self.auto_trader else {}
+        return formatters.format_pm_status(
+            connected=health["connected"],
+            wallet=self.polymarket_client.wallet_address,
+            balance=health.get("balance"),
+            autotrade_on=config.get("enabled", False),
+            trade_amount=config.get("trade_amount", 0),
+            session_trades=config.get("session_trades", 0),
+            error=health.get("error"),
+        )
 
 
 async def run_bot():

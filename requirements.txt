@@ -15,3 +15,7 @@ python-telegram-bot==21.10
 
 # Utils
 python-dotenv==1.0.1
+
+# Polymarket trading
+py-clob-client>=0.34.6
+web3>=6.14.0
