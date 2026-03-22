@@ -126,7 +126,7 @@ def format_signal(signal, prediction: dict) -> str:
         "",
         "<code>"
         f"Confidence       {confidence:.1%}\n"
-        f"Price         {price}\n"
+        f"Price            {price}\n"
         f"Model            {model_acc:.1%}"
         "</code>",
     ]
