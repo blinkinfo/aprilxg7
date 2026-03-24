@@ -9,6 +9,13 @@ Fixes applied (v5 — accuracy truthfulness overhaul):
   consistency between training and inference. When ffill=True, NaN values
   from indicator warm-up are forward-filled instead of dropping rows.
 - Fix D: Labels and features use robust index alignment via intersection.
+
+Fixes applied (v6 — bug fixes):
+- Fix: Removed duplicate raw features (rsi, stoch_k, stoch_d, mfi, adx)
+  that duplicated their normalized counterparts.
+- Fix: Guard volume_change against infinity when previous volume is 0.
+- Fix: Robust HTF reindexing — always use feat.index with ffill, avoid
+  fragile integer-index branch.
 """
 import logging
 
@@ -135,6 +142,8 @@ class FeatureEngineer:
         feat["volume_sma20"] = feat["volume"].rolling(20).mean()
         feat["volume_ratio"] = feat["volume"] / feat["volume_sma20"].replace(0, np.nan)
         feat["volume_change"] = feat["volume"].pct_change(1)
+        # Fix: Guard volume_change against infinity (when previous volume is 0)
+        feat["volume_change"] = feat["volume_change"].replace([np.inf, -np.inf], 0.0)
 
         # --- Momentum / Z-score Features ---
         for lookback in [5, 10, 20]:
@@ -194,24 +203,40 @@ class FeatureEngineer:
                     f"{prefix}_ema_cross": htf_ema_cross,
                 }, index=tf_df.index)
 
-                # Reindex to 5m timestamps using forward-fill
-                if hasattr(feat.index, 'freq') or feat.index.dtype == 'datetime64[ns]':
+                # Fix: Robust HTF reindexing — always reindex to feat.index.
+                # Convert both indices to a common type for safe reindexing.
+                # Use asof-style forward-fill: for each feat timestamp, pick the
+                # last HTF value at or before that timestamp.
+                try:
                     htf_reindexed = htf_features.reindex(feat.index, method="ffill")
-                else:
-                    # Integer index: merge on nearest timestamp if available
-                    htf_reindexed = htf_features.reindex(
-                        range(len(feat)), method="ffill"
-                    )
+                except (ValueError, TypeError):
+                    # Fallback: if indices are incompatible (e.g. mixed types),
+                    # concatenate and sort to enable proper forward-fill.
+                    try:
+                        combined = htf_features.reindex(
+                            htf_features.index.union(feat.index)
+                        ).ffill()
+                        htf_reindexed = combined.reindex(feat.index)
+                    except Exception as e:
+                        logger.warning(
+                            f"HTF reindex failed for {tf_label}: {e}. "
+                            f"Skipping higher-TF features for this timeframe."
+                        )
+                        continue
 
                 for col in htf_reindexed.columns:
                     feat[col] = htf_reindexed[col].values[:len(feat)]
 
-        # --- Select feature columns only (drop OHLCV and intermediate columns) ---
+        # --- Select feature columns only (drop OHLCV, intermediate, and raw duplicates) ---
+        # Fix: Drop raw indicator columns that duplicate their normalized versions.
+        # Keep *_norm versions; drop raw rsi, stoch_k, stoch_d, mfi, adx.
+        raw_duplicate_cols = {"rsi", "stoch_k", "stoch_d", "mfi", "adx"}
         feature_cols = [
             col for col in feat.columns
             if col not in ["open", "high", "low", "close", "volume",
                            "close_time", "quote_volume", "timestamp",
                            "volume_sma20"]
+            and col not in raw_duplicate_cols
         ]
         result = feat[feature_cols].copy()
 

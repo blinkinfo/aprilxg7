@@ -15,6 +15,12 @@ Fixes applied (v5 — accuracy truthfulness overhaul):
 - Fix G: Production model retrained on 100% of data after validation confirms
   quality, so no recent data is wasted.
 
+Fixes applied (v6 — bug fixes):
+- Fix: Feature safety net in predict() — gracefully handles missing/extra
+  features between training and inference (e.g. HTF features absent).
+- Fix: Retrain loop — last_train_time updated even when retrain gate rejects,
+  preventing infinite retrain attempts.
+
 Prior improvements preserved:
 - Improvement 2: Confidence filtering — skip low-confidence predictions
 - Improvement 4: Walk-forward retraining gate — only swap model if new one is better
@@ -634,6 +640,10 @@ class PredictionModel:
                 f"old={old_accuracy:.4f}, new={new_val_accuracy:.4f}, "
                 f"improvement={improvement:+.4f} < threshold={gate_threshold}"
             )
+            # Fix: Update last_train_time even on rejection to prevent
+            # infinite retrain loop. The timer resets so we don't immediately
+            # re-enter training on the next main loop iteration.
+            self.last_train_time = datetime.now(timezone.utc)
             return {
                 "success": True,
                 "accepted": False,
@@ -813,7 +823,7 @@ class PredictionModel:
         }
 
     # ------------------------------------------------------------------
-    # Prediction / Inference (Fix C + D)
+    # Prediction / Inference (Fix C + D + feature safety net)
     # ------------------------------------------------------------------
 
     def predict(
@@ -825,6 +835,9 @@ class PredictionModel:
 
         Fix D: The caller (bot.py) passes only COMPLETED candles.
         Fix C: NaN values are forward-filled consistently with training.
+        Fix (v6): Feature safety net — gracefully handles column mismatches
+        between training feature_names and inference features (e.g. when
+        higher-TF data is unavailable and HTF feature columns are missing).
 
         Args:
             df_5m: DataFrame of COMPLETED 5m candles (current candle excluded)
@@ -847,7 +860,25 @@ class PredictionModel:
                 logger.warning("Feature computation returned empty DataFrame")
                 return None
 
-            latest = features_df.iloc[[-1]][self.feature_names]
+            # --- Feature safety net (v6 fix) ---
+            # The model was trained on self.feature_names, but inference may
+            # produce a different set of columns (e.g. HTF features missing
+            # when higher_tf_data is unavailable, or new features added).
+            # We align to the training feature set:
+            #   - Missing features -> filled with 0.0
+            #   - Extra features   -> dropped
+            available_cols = set(features_df.columns)
+            expected_cols = self.feature_names
+            missing_cols = [c for c in expected_cols if c not in available_cols]
+            if missing_cols:
+                logger.warning(
+                    f"Feature safety net: {len(missing_cols)} features missing at inference "
+                    f"(zero-filled): {missing_cols[:10]}{'...' if len(missing_cols) > 10 else ''}"
+                )
+                for col in missing_cols:
+                    features_df[col] = 0.0
+
+            latest = features_df.iloc[[-1]][expected_cols]
 
             # Fix C: Last-resort fallback for any remaining NaN after ffill
             if latest.isna().any().any():
