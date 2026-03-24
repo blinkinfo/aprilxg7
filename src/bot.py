@@ -292,8 +292,20 @@ class SignalBot:
 
             higher_tf = {k: v for k, v in data.items() if k != "5m" and not v.empty}
 
+            # Fix D: Exclude the current in-progress candle.
+            # At signal time (~15s before close), the current candle's OHLCV
+            # is NOT finalized. The model was trained on completed candles only,
+            # so we must match that at inference time.
+            df_5m_completed = df_5m.iloc[:-1]  # Drop last (in-progress) candle
+            higher_tf_completed = {}
+            for k, v in higher_tf.items():
+                if not v.empty:
+                    higher_tf_completed[k] = v.iloc[:-1]  # Drop last (may be in-progress)
+                else:
+                    higher_tf_completed[k] = v
+
             # Make prediction
-            prediction = self.model.predict(df_5m, higher_tf)
+            prediction = self.model.predict(df_5m_completed, higher_tf_completed)
 
             if prediction["signal"] in ("UP", "DOWN"):
                 # ----------------------------------------------------------------
