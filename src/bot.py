@@ -280,9 +280,14 @@ class SignalBot:
         """
         try:
             # Fetch multi-timeframe data
+            # Add warm-up buffer for indicator computation (ATR regime uses 100-period
+            # rolling window, plus other indicators need ~50 candles). Fetch extra
+            # candles so features aren't all NaN after the warm-up period.
+            warmup_buffer = 150
+            fetch_limit = self.config.model.lookback_candles + warmup_buffer
             data = await self.fetcher.fetch_multi_timeframe(
                 intervals=["5m", "15m", "1h"],
-                limit=self.config.model.lookback_candles,
+                limit=fetch_limit,
             )
 
             df_5m = data.get("5m")
@@ -307,7 +312,7 @@ class SignalBot:
             # Make prediction
             prediction = self.model.predict(df_5m_completed, higher_tf_completed)
 
-            if prediction["signal"] in ("UP", "DOWN"):
+            if prediction is not None and prediction["signal"] in ("UP", "DOWN"):
                 # ----------------------------------------------------------------
                 # KEY FIX: The model predicts the NEXT candle, not the current one.
                 # current_slot is the candle about to close (e.g. 16:40).
@@ -371,10 +376,13 @@ class SignalBot:
                             formatters.format_trade_error(str(te))
                         )
             else:
-                logger.info(
-                    f"No signal: confidence below {self.config.model.confidence_min} "
-                    f"({prediction['confidence']:.4f})"
-                )
+                if prediction is not None:
+                    logger.info(
+                        f"No signal: confidence below {self.config.model.confidence_min} "
+                        f"({prediction['confidence']:.4f})"
+                    )
+                else:
+                    logger.info("No signal: prediction returned None (insufficient data or low confidence)")
 
         except Exception as e:
             logger.error(f"Prediction cycle error: {e}", exc_info=True)

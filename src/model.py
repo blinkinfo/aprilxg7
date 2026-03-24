@@ -103,6 +103,9 @@ class PredictionModel:
             return
 
         path = path or os.path.join(self._model_dir, "model.pkl")
+        # If path is a directory (or has no file extension), treat as directory and append filename
+        if os.path.isdir(path) or not os.path.splitext(path)[1]:
+            path = os.path.join(path, "model.pkl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
         state = {
@@ -123,6 +126,9 @@ class PredictionModel:
     def load(self, path: Optional[str] = None) -> bool:
         """Load model + metadata from disk. Returns True if successful."""
         path = path or os.path.join(self._model_dir, "model.pkl")
+        # If path is a directory (or has no file extension), treat as directory and append filename
+        if os.path.isdir(path) or not os.path.splitext(path)[1]:
+            path = os.path.join(path, "model.pkl")
         if not os.path.exists(path):
             logger.info(f"No saved model found at {path}")
             return False
