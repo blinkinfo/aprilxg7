@@ -530,7 +530,11 @@ class PredictionModel:
         self.val_logloss = metrics["val_logloss"]
         self.train_samples = metrics["total_samples"]
         self.train_start_ts = metrics.get("train_start_ts")
+        if self.train_start_ts is not None and self.train_start_ts.tzinfo is None:
+            self.train_start_ts = self.train_start_ts.replace(tzinfo=timezone.utc)
         self.train_end_ts = metrics.get("train_end_ts")
+        if self.train_end_ts is not None and self.train_end_ts.tzinfo is None:
+            self.train_end_ts = self.train_end_ts.replace(tzinfo=timezone.utc)
         self.last_train_time = datetime.now(timezone.utc)
 
         # Clear pending state
@@ -666,7 +670,7 @@ class PredictionModel:
         }
         with open(path, "wb") as f:
             pickle.dump(state, f)
-        logger.info(f"Model saved to {path}")
+        logger.info(f"Model saved to {path} (train_end_ts={self.train_end_ts})")
         return path
 
     def load(self, model_dir: str) -> bool:
@@ -688,8 +692,12 @@ class PredictionModel:
             self.train_samples = state["train_samples"]
             self.best_xgb_params = state.get("best_xgb_params")
             self.train_start_ts = state.get("train_start_ts")
+            if self.train_start_ts is not None and self.train_start_ts.tzinfo is None:
+                self.train_start_ts = self.train_start_ts.replace(tzinfo=timezone.utc)
             self.train_end_ts = state.get("train_end_ts")
-            logger.info(f"Model loaded from {path} (val_acc={self.val_accuracy:.4f})")
+            if self.train_end_ts is not None and self.train_end_ts.tzinfo is None:
+                self.train_end_ts = self.train_end_ts.replace(tzinfo=timezone.utc)
+            logger.info(f"Model loaded from {path} (val_acc={self.val_accuracy:.4f}, train_end_ts={self.train_end_ts})")
             return True
         except Exception as e:
             logger.error(f"Failed to load model: {e}")

@@ -1088,6 +1088,23 @@ def format_backtest_result(result) -> str:
     lines = [
         "\U0001f4ca  <b>BACKTEST COMPLETE</b>",
         "",
+    ]
+
+    # OOS warning at the top if present
+    if getattr(result, "oos_warning", None):
+        lines.append(f"\u26a0\ufe0f {_escape_html(result.oos_warning)}")
+        lines.append("")
+
+    # All in-sample warning
+    oos_total = getattr(result, "oos_total_signals", 0)
+    if oos_total == 0 and result.total_signals > 0 and not getattr(result, "oos_warning", None):
+        lines.append(
+            "\u26a0\ufe0f ALL signals are in-sample (model was trained on "
+            "this data). Results are NOT indicative of live performance."
+        )
+        lines.append("")
+
+    lines.extend([
         f"<code>{time_range}</code>",
         f"<code>{result.actual_candles:,} candles     {elapsed_str}</code>",
         "",
@@ -1100,7 +1117,29 @@ def format_backtest_result(result) -> str:
         f"Avg P&amp;L          {avg_sign}${abs(result.avg_pnl):.3f}"
         "</code>",
         "",
-    ]
+    ])
+
+    # Out-of-Sample section
+    oos_total = getattr(result, "oos_total_signals", 0)
+    if oos_total > 0:
+        oos_pnl_sign = "+" if result.oos_pnl >= 0 else ""
+        lines.append("\U0001f52c <b>Out-of-Sample Only</b>")
+        lines.append(
+            "<code>"
+            f"Signals          {oos_total}\n"
+            f"Record           {result.oos_wins}W - {result.oos_losses}L\n"
+            f"Win Rate         {result.oos_win_rate:.1%}\n"
+            f"P&amp;L              {oos_pnl_sign}${abs(result.oos_pnl):.2f}"
+            "</code>"
+        )
+        # OOS strong signals breakdown
+        oos_strong = getattr(result, "oos_strong_signals", 0)
+        if oos_strong > 0:
+            lines.append(
+                f"<code>Strong           {result.oos_strong_wins}W / {oos_strong}  "
+                f"({result.oos_strong_win_rate:.1%})</code>"
+            )
+        lines.append("")
 
     # Confidence breakdown
     if result.strong_signals or result.normal_signals:

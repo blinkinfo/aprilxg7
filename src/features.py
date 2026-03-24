@@ -189,6 +189,10 @@ class FeatureEngineer:
                      "macd_line_raw", "macd_signal_raw", "macd_histogram_raw"]
         feature_cols = [c for c in feat.columns if c not in drop_cols]
         result = feat[feature_cols].copy()
+        # Drop rows with NaN values from rolling window warm-up
+        # This ensures consistent behavior between training (which drops NaN)
+        # and inference (backtester/live predict)
+        result = result.dropna()
         return result
 
     def get_feature_names(self, df: pd.DataFrame) -> list[str]:

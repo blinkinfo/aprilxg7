@@ -9,9 +9,12 @@ Design principles:
 
 No-Lookahead Guarantee:
     For each candle i in the backtest window, features are computed using
-    only candles [max(0, i - WINDOW_SIZE) : i + 1]. Higher-TF data is
-    filtered to timestamps <= candle[i].timestamp. The model predicts
-    the direction of candle[i + 1], which is then compared to its actual
+    only candles [max(0, i - WINDOW_SIZE) : i] (i.e. up to candle i-1).
+    This simulates pre-close signal timing: in live trading, the signal
+    fires ~10-15s before the current candle closes, so the model only
+    has completed data up to the previous candle. Higher-TF data is
+    filtered to timestamps <= candle[i-1].timestamp. The model predicts
+    the direction of candle i, which is then compared to its actual
     open/close. At no point does any future data leak into the prediction.
 """
 import asyncio
@@ -118,6 +121,15 @@ class BacktestResult:
     oos_candles: int = 0  # Number of truly out-of-sample candles evaluated
     in_sample_candles: int = 0  # Number of candles that overlapped with training data
     oos_warning: Optional[str] = None  # Warning if backtest includes in-sample data
+    # OOS-only stats (FIX 3 & 4: separate in-sample vs OOS reporting)
+    oos_total_signals: int = 0
+    oos_wins: int = 0
+    oos_losses: int = 0
+    oos_win_rate: float = 0.0
+    oos_pnl: float = 0.0
+    oos_strong_signals: int = 0
+    oos_strong_wins: int = 0
+    oos_strong_win_rate: float = 0.0
 
 
 class Backtester:
@@ -204,13 +216,15 @@ class Backtester:
         # ---------------------------------------------------------------
         # 1. Fetch historical data
         # ---------------------------------------------------------------
-        # We need extra candles for feature warm-up, plus 1 for the
-        # resolution of the last prediction.
+        # FIX 5: Updated data requirements.
+        # We need FEATURE_WINDOW_SIZE candles for warm-up before the first
+        # prediction target, plus n_candles to predict. No extra +1 needed
+        # since we predict candle i (not i+1) using features up to i-1.
         total_needed = n_candles + FEATURE_WINDOW_SIZE + 1
 
         logger.info(
             f"Backtest: fetching {total_needed} 5m candles "
-            f"({n_candles} backtest + {FEATURE_WINDOW_SIZE} warmup + 1 resolution)"
+            f"({n_candles} backtest + {FEATURE_WINDOW_SIZE}+1 warmup)"
         )
 
         fetch_start = time.monotonic()
@@ -243,11 +257,15 @@ class Backtester:
         # ---------------------------------------------------------------
         # 2. Determine actual backtest range
         # ---------------------------------------------------------------
-        # The backtest window starts at FEATURE_WINDOW_SIZE and ends at
-        # len(df_5m) - 2 (need i+1 for resolution).
+        # FIX 1 & FIX 5: Updated index calculations.
+        # For each step i, features use candles up to i-1 (window_start:i),
+        # and we predict/resolve candle i using opens[i] and closes[i].
+        # We need at least FEATURE_WINDOW_SIZE candles before candle i-1,
+        # so the first valid i is FEATURE_WINDOW_SIZE + 1.
+        # The last valid i is total_available - 1 (last candle in the array).
         total_available = len(df_5m)
-        bt_start_idx = FEATURE_WINDOW_SIZE
-        bt_end_idx = total_available - 2  # last index where we can resolve i+1
+        bt_start_idx = FEATURE_WINDOW_SIZE + 1
+        bt_end_idx = total_available - 1  # last candle we can predict and resolve
 
         if bt_end_idx <= bt_start_idx:
             return BacktestResult(
@@ -257,7 +275,7 @@ class Backtester:
                 end_time="",
                 error=(
                     f"Not enough data for backtest. Fetched {total_available} candles "
-                    f"but need at least {FEATURE_WINDOW_SIZE + 2}."
+                    f"but need at least {FEATURE_WINDOW_SIZE + 3}."
                 ),
                 elapsed_seconds=time.monotonic() - overall_start,
             )
@@ -277,10 +295,13 @@ class Backtester:
         # ---------------------------------------------------------------
         # 2b. Out-of-sample enforcement
         # ---------------------------------------------------------------
-        # Check if model has training data cutoff info
+        # FIX 3: Robust OOS detection.
+        # If train_end_ts is not available, pessimistically mark ALL signals
+        # as in-sample (is_oos=False) rather than optimistically assuming OOS.
         train_end_ts_dt = None
-        oos_start_idx = bt_start_idx  # default: all candles are OOS
+        oos_start_idx = None  # Will be set below
         in_sample_count = 0
+        no_train_end_ts = False
 
         if hasattr(self.model, 'train_end_ts') and self.model.train_end_ts is not None:
             train_end_ts_dt = self.model.train_end_ts
@@ -310,9 +331,14 @@ class Backtester:
                     f"Only {actual_bt_candles - in_sample_count} are truly out-of-sample."
                 )
         else:
+            # FIX 3: No train_end_ts available -- pessimistic: assume ALL in-sample
+            no_train_end_ts = True
+            oos_start_idx = bt_end_idx + 1  # Mark all as in-sample
+            in_sample_count = actual_bt_candles
             logger.warning(
-                "Backtest: model has no train_end_ts \u2014 cannot verify out-of-sample status. "
-                "Results may include in-sample data and appear inflated."
+                "Backtest: model has no train_end_ts -- cannot verify out-of-sample status. "
+                "ALL signals will be marked as in-sample (pessimistic). "
+                "Retrain the model to set train_end_ts for accurate OOS tracking."
             )
 
         # ---------------------------------------------------------------
@@ -328,12 +354,16 @@ class Backtester:
         closes = df_5m["close"].values
 
         for step, i in enumerate(range(bt_start_idx, bt_end_idx + 1)):
-            # --- No-lookahead window: only candles up to and including i ---
-            window_start = max(0, i - FEATURE_WINDOW_SIZE + 1)
-            window_5m = df_5m.iloc[window_start: i + 1].copy()
+            # --- FIX 1: No-lookahead window ---
+            # Simulate pre-close signal timing: at signal time, candle i is
+            # still forming, so we only have completed data up to candle i-1.
+            # Features are computed on candles [window_start : i) (excludes i).
+            window_start = max(0, i - FEATURE_WINDOW_SIZE)
+            window_5m = df_5m.iloc[window_start: i].copy()  # up to i-1 inclusive
 
-            # Filter higher-TF data to only candles <= current timestamp
-            current_ts = df_5m["timestamp"].iloc[i]
+            # Filter higher-TF data to only candles <= timestamp of candle i-1
+            # (the last completed candle at signal time)
+            current_ts = df_5m["timestamp"].iloc[i - 1]
             filtered_htf = {}
             for tf_key, tf_df in higher_tf.items():
                 if tf_df is not None and not tf_df.empty:
@@ -360,6 +390,14 @@ class Backtester:
             try:
                 expected_cols = self.model.model.get_booster().feature_names
                 latest = features_df[expected_cols].iloc[[-1]]
+
+                # FIX 2: NaN handling to match live predict() in model.py.
+                # In live inference, model.py does latest.fillna(0).
+                # In training, NaN rows are dropped entirely.
+                # Match live behavior for consistency.
+                if latest.isna().any().any():
+                    latest = latest.fillna(0)
+
                 proba = self.model.model.predict_proba(latest)[0]
                 prob_down, prob_up = float(proba[0]), float(proba[1])
                 confidence = max(prob_up, prob_down)
@@ -374,14 +412,15 @@ class Backtester:
                 skipped += 1
                 continue
 
-            # --- Resolve against NEXT candle (i+1) ---
-            next_idx = i + 1
-            next_open = float(opens[next_idx])
-            next_close = float(closes[next_idx])
+            # --- FIX 1: Resolve against candle i (not i+1) ---
+            # The prediction is for the direction of candle i, which is the
+            # next candle to complete after the signal fires.
+            resolve_open = float(opens[i])
+            resolve_close = float(closes[i])
 
-            if next_close > next_open:
+            if resolve_close > resolve_open:
                 actual_direction = "UP"
-            elif next_close < next_open:
+            elif resolve_close < resolve_open:
                 actual_direction = "DOWN"
             else:
                 actual_direction = "NEUTRAL"
@@ -401,7 +440,7 @@ class Backtester:
 
             signal = BacktestSignal(
                 index=i,
-                candle_timestamp=df_5m["timestamp"].iloc[next_idx].isoformat(),
+                candle_timestamp=df_5m["timestamp"].iloc[i].isoformat(),
                 direction=direction,
                 confidence=confidence,
                 prob_up=prob_up,
@@ -410,9 +449,10 @@ class Backtester:
                 actual_direction=actual_direction,
                 result=result,
                 pnl=pnl,
-                open_price=next_open,
-                close_price=next_close,
+                open_price=resolve_open,
+                close_price=resolve_close,
             )
+            # FIX 3: Robust OOS marking
             signal.is_oos = (i >= oos_start_idx)
             signals.append(signal)
 
@@ -444,6 +484,7 @@ class Backtester:
             fetch_seconds=fetch_seconds,
             train_end_ts_str=train_end_ts_dt.isoformat() if train_end_ts_dt else None,
             in_sample_count=in_sample_count,
+            no_train_end_ts=no_train_end_ts,
         )
 
         logger.info(
@@ -456,16 +497,20 @@ class Backtester:
         if result.oos_warning:
             logger.warning(result.oos_warning)
 
-        # Also log OOS-only win rate for comparison
-        oos_signals = [s for s in signals if s.is_oos]
-        if oos_signals:
-            oos_wins = sum(1 for s in oos_signals if s.result == "WIN")
-            oos_decided = sum(1 for s in oos_signals if s.result in ("WIN", "LOSS"))
+        # Log OOS-only stats for comparison
+        if result.oos_total_signals > 0:
+            oos_decided = result.oos_wins + result.oos_losses
             if oos_decided > 0:
                 logger.info(
-                    f"Backtest OOS-only: {oos_wins}/{oos_decided} = "
-                    f"{oos_wins/oos_decided:.1%} win rate"
+                    f"Backtest OOS-only: {result.oos_wins}/{oos_decided} = "
+                    f"{result.oos_win_rate:.1%} win rate, "
+                    f"PnL ${result.oos_pnl:+.2f}"
                 )
+        else:
+            logger.warning(
+                "Backtest: no out-of-sample signals. All signals are in-sample "
+                "and results may be inflated."
+            )
 
         return result
 
@@ -481,6 +526,7 @@ class Backtester:
         fetch_seconds: float,
         train_end_ts_str: str = None,
         in_sample_count: int = 0,
+        no_train_end_ts: bool = False,
     ) -> BacktestResult:
         """Compute aggregate statistics from backtest signals."""
         result = BacktestResult(
@@ -504,7 +550,7 @@ class Backtester:
         if not signals:
             return result
 
-        # Win/Loss counts
+        # Win/Loss counts (all signals)
         result.wins = sum(1 for s in signals if s.result == "WIN")
         result.losses = sum(1 for s in signals if s.result == "LOSS")
         result.neutral = sum(1 for s in signals if s.result == "NEUTRAL")
@@ -573,14 +619,40 @@ class Backtester:
         result.longest_win_streak = max_win_streak
         result.longest_loss_streak = max_loss_streak
 
-
-        # OOS tracking
+        # ---------------------------------------------------------------
+        # OOS tracking (FIX 3 & 4: Separate in-sample vs OOS reporting)
+        # ---------------------------------------------------------------
         result.train_end_ts = train_end_ts_str
         result.in_sample_candles = in_sample_count
+
         oos_signals = [s for s in signals if s.is_oos]
         result.oos_candles = len(oos_signals)
 
-        if in_sample_count > 0 and signals:
+        # Compute OOS-only statistics
+        result.oos_total_signals = len(oos_signals)
+        result.oos_wins = sum(1 for s in oos_signals if s.result == "WIN")
+        result.oos_losses = sum(1 for s in oos_signals if s.result == "LOSS")
+        oos_decided = result.oos_wins + result.oos_losses
+        result.oos_win_rate = result.oos_wins / oos_decided if oos_decided > 0 else 0.0
+        result.oos_pnl = sum(s.pnl for s in oos_signals)
+
+        # OOS strong signal breakdown
+        oos_strong = [s for s in oos_signals if s.strength == "STRONG"]
+        result.oos_strong_signals = len(oos_strong)
+        result.oos_strong_wins = sum(1 for s in oos_strong if s.result == "WIN")
+        oos_strong_decided = sum(1 for s in oos_strong if s.result in ("WIN", "LOSS"))
+        result.oos_strong_win_rate = (
+            result.oos_strong_wins / oos_strong_decided if oos_strong_decided > 0 else 0.0
+        )
+
+        # Build OOS warning message
+        if no_train_end_ts:
+            result.oos_warning = (
+                "WARNING: Model has no train_end_ts -- cannot determine out-of-sample status. "
+                "ALL signals are marked as in-sample (pessimistic). "
+                "Retrain the model to set train_end_ts for accurate OOS metrics."
+            )
+        elif in_sample_count > 0 and signals:
             total = len(signals)
             oos_count = len(oos_signals)
             result.oos_warning = (
@@ -588,4 +660,5 @@ class Backtester:
                 f"Only {oos_count}/{total} signals ({oos_count/total*100:.0f}%) are truly out-of-sample. "
                 f"In-sample results appear inflated. Retrain on older data or wait for new candles to get accurate OOS metrics."
             )
+
         return result
