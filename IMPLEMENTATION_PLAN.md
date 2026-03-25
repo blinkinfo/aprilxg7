@@ -1,6 +1,6 @@
 # AprilXG V5 — Multi-Model Ensemble Implementation Plan
 
-## MASTER STATUS: PHASE 2 OF 5 — COMPLETE
+## MASTER STATUS: PHASE 3 OF 5 — COMPLETE
 
 > **This file is the SINGLE SOURCE OF TRUTH for implementation.**
 > Every AI agent session MUST read this file FIRST, check the status boxes,
@@ -1091,3 +1091,24 @@ If backtest shows < 55% accuracy:
   - Save/load with XGBoost JSON, LightGBM text, CatBoost CBM formats
   - predict() returns full signal dict (signal, raw_prob, cal_prob, confidence, regime, model_agreement, EV)
 - All validation criteria passed: regime classification, model training, feature pruning, calibration, save/load roundtrip
+
+### Session 3 — Phase 3: Adaptive Calibration + Trade Manager (2026-03-25)
+- Created `src/calibration_v2.py` with `CalibratorV2` class:
+  - Per-regime calibration: Isotonic (>=100 samples), Platt scaling (30-99 samples), Passthrough (<30 samples)
+  - Probability clipping to [0.01, 0.99] in all paths
+  - Batch calibration support via `calibrate_batch()`
+  - Save/load with pickle serialization (preserves all calibrator state)
+  - `get_stats()` returns per-regime calibration metadata (type, sample count, spread)
+  - Verified: spread > 0.10 for all regimes (no probability collapse to ~50.4%)
+- Created `src/trade_manager.py` with `TradeManager` class:
+  - 3-tier confidence system: Tier 1 (>=0.57), Tier 2 (>=0.54), Tier 3 (>=0.52 + agreement>=2)
+  - Session risk manager: NORMAL -> CAUTIOUS (rolling acc < 48%, 30min) -> DEFENSIVE (< 42%, 60min)
+  - CAUTIOUS: disables Tier 3, DEFENSIVE: only Tier 1
+  - Time-based revert: modes auto-expire after configured duration
+  - `configure()` method for Phase 4 integration with EnsembleConfig
+  - `record_result()` updates rolling accuracy and triggers mode transitions
+  - `get_stats()` returns full state including tier distribution and mode transitions
+  - Verified: 169 trades on 24h simulation (288 slots) — well above 70 minimum
+- All 12 verification tests passed:
+  - CalibratorV2: import, fit, spread>0.10, per-regime, batch, save/load, stats
+  - TradeManager: import, tier gating (5 scenarios), risk modes (7 scenarios), 70+ trades, stats
