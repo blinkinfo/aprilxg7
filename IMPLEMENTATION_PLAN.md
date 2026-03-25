@@ -580,11 +580,11 @@ data/ensemble_model/
 **Depends on:** Phase 2 complete
 
 ### Status
-- [ ] 3.1 Create `src/calibration_v2.py`
-- [ ] 3.2 Create `src/trade_manager.py`
-- [ ] 3.3 Verify calibrators produce spread probabilities
-- [ ] 3.4 Verify trade manager produces 70+ signals on 24h of historical data
-- [ ] 3.5 Commit: `Phase 3: Adaptive Calibration + Trade Manager`
+- [x] 3.1 Create `src/calibration_v2.py`
+- [x] 3.2 Create `src/trade_manager.py`
+- [x] 3.3 Verify calibrators produce spread probabilities
+- [x] 3.4 Verify trade manager produces 70+ signals on 24h of historical data
+- [x] 3.5 Commit: `Phase 3: Adaptive Calibration + Trade Manager`
 
 ### 3.1 — Create `src/calibration_v2.py`
 
@@ -715,11 +715,11 @@ With 288 five-minute slots per day:
 If actual count is lower after calibration, Phase 5 adjusts thresholds.
 
 #### Validation Criteria (Phase 3 is DONE when):
-- [ ] CalibratorV2 produces different calibration per regime
-- [ ] Calibrated probabilities have spread > 0.10 (not all collapsed to 0.504)
-- [ ] TradeManager correctly gates tiers based on confidence
-- [ ] Risk mode transitions work (NORMAL → CAUTIOUS → DEFENSIVE → NORMAL)
-- [ ] TradeManager produces 70+ trade signals on a simulated 24h prediction set
+- [x] CalibratorV2 produces different calibration per regime
+- [x] Calibrated probabilities have spread > 0.10 (not all collapsed to 0.504)
+- [x] TradeManager correctly gates tiers based on confidence
+- [x] Risk mode transitions work (NORMAL → CAUTIOUS → DEFENSIVE → NORMAL)
+- [x] TradeManager produces 70+ trade signals on a simulated 24h prediction set
 
 ---
 
