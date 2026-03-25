@@ -354,10 +354,10 @@ Reindex higher TF features to 5m index using ffill (same as current `features.py
 **Depends on:** Phase 1 complete
 
 ### Status
-- [ ] 2.1 Create `src/regime.py`
-- [ ] 2.2 Create `src/ensemble.py`
-- [ ] 2.3 Verify ensemble trains on sample data without errors
-- [ ] 2.4 Commit: `Phase 2: Multi-Model Ensemble + Regime Detection`
+- [x] 2.1 Create `src/regime.py`
+- [x] 2.2 Create `src/ensemble.py`
+- [x] 2.3 Verify ensemble trains on sample data without errors
+- [x] 2.4 Commit: `Phase 2: Multi-Model Ensemble + Regime Detection`
 
 ### 2.1 — Create `src/regime.py`
 
@@ -561,14 +561,14 @@ data/ensemble_model/
 ```
 
 #### Validation Criteria (Phase 2 is DONE when):
-- [ ] `regime.py` classifies regimes correctly (test on synthetic trending/ranging data)
-- [ ] `ensemble.py` trains all 3 models without error on real MEXC data
-- [ ] Each model uses feature pruning (top 25 per model)
-- [ ] Optuna runs 15 trials per model within 300s each
-- [ ] Calibrators fit on CAL split
-- [ ] OOS evaluation produces accuracy metrics per regime
-- [ ] Save/load round-trips successfully
-- [ ] Training completes in < 20 minutes total on Railway (2 vCPU)
+- [x] `regime.py` classifies regimes correctly (test on synthetic trending/ranging data)
+- [x] `ensemble.py` trains all 3 models without error on real MEXC data
+- [x] Each model uses feature pruning (top 25 per model)
+- [x] Optuna runs 15 trials per model within 300s each
+- [x] Calibrators fit on CAL split
+- [x] OOS evaluation produces accuracy metrics per regime
+- [x] Save/load round-trips successfully
+- [x] Training completes in < 20 minutes total on Railway (2 vCPU)
 
 ---
 
@@ -1076,3 +1076,18 @@ If backtest shows < 55% accuracy:
 - Validation passed: 76 columns, 0 NaN (ffill=True), 0 inf, feature names deterministic
 - Fixed `_fill_htf_nan()` to use neutral defaults (RSI=50, returns=0, ATR ratio=1) instead of NaN for HTF-missing case
 - Fixed `fetch_recent_trades()`: corrected endpoint from `/api/v3/trades` to `/api/v3/aggTrades`, removed extra `symbol` parameter, added aggTrades column renames (`a→id, p→price, q→qty, T→time, m→isBuyerMaker`), changed error handling to non-fatal (returns empty DataFrame)
+
+### Session 2 — Phase 2: Multi-Model Ensemble + Regime Detection (2026-03-25)
+- Created `src/regime.py` with `RegimeDetector` class:
+  - 4 regimes: TRENDING_UP (0), TRENDING_DOWN (1), RANGING (2), VOLATILE (3)
+  - Detection based on adx_10, ema_cross, atr_ratio, bb_squeeze features
+  - Regime weight matrix matching spec (momentum/mean_reversion/microstructure weights per regime)
+- Created `src/ensemble.py` with `EnsembleModel` class (~43KB, full implementation):
+  - 3 sub-models: XGBoost (momentum), LightGBM (mean reversion), CatBoost (microstructure)
+  - Optuna hyperparameter tuning (15 trials per model, 300s timeout)
+  - Feature pruning (top 25 features per model)
+  - INNER(65%) | PURGE(20) | CAL(10%) | PURGE(20) | OOS(10%) data split
+  - Per-regime calibration (Isotonic/Platt/passthrough based on sample count)
+  - Save/load with XGBoost JSON, LightGBM text, CatBoost CBM formats
+  - predict() returns full signal dict (signal, raw_prob, cal_prob, confidence, regime, model_agreement, EV)
+- All validation criteria passed: regime classification, model training, feature pruning, calibration, save/load roundtrip
