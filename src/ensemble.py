@@ -877,8 +877,12 @@ class EnsembleModel:
 
         model_agreement = sum(1 for d in model_directions if d == signal)
 
-        # EV calculation
-        ev = (confidence * self.config.win_payout) - ((1.0 - confidence) * self.config.loss_amount)
+        # EV calculation (directional — uses cal_prob for the predicted direction)
+        if signal == "UP":
+            ev = (cal_prob_up * self.config.win_payout) - ((1.0 - cal_prob_up) * self.config.loss_amount)
+        else:
+            cal_prob_down = 1.0 - cal_prob_up
+            ev = (cal_prob_down * self.config.win_payout) - ((1.0 - cal_prob_down) * self.config.loss_amount)
 
         return {
             "signal": signal,

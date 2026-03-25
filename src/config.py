@@ -121,7 +121,7 @@ class EnsembleConfig:
     train_candles: int = field(default_factory=lambda: int(os.getenv("V5_TRAIN_CANDLES", "20000")))  # ~70 days, fresher data
     retrain_interval_hours: int = field(default_factory=lambda: int(os.getenv("V5_RETRAIN_HOURS", "2")))
     sample_weight_recent_multiplier: float = field(default_factory=lambda: float(os.getenv("V5_RECENT_WEIGHT", "3.0")))
-    recent_window_frac: float = 0.33  # Last 33% of training data gets weight multiplier
+    recent_window_frac: float = field(default_factory=lambda: float(os.getenv("V5_RECENT_WINDOW_FRAC", "0.33")))  # Last 33% of training data gets weight multiplier
 
     # Optuna
     optuna_trials_per_model: int = field(default_factory=lambda: int(os.getenv("V5_OPTUNA_TRIALS", "15")))
@@ -137,11 +137,11 @@ class EnsembleConfig:
     tier3_min_agreement: int = field(default_factory=lambda: int(os.getenv("V5_TIER3_MIN_AGREEMENT", "2")))
 
     # Session risk
-    cautious_accuracy_threshold: float = 0.48
-    defensive_accuracy_threshold: float = 0.42
-    cautious_duration_minutes: int = 30
-    defensive_duration_minutes: int = 60
-    rolling_window: int = 20
+    cautious_accuracy_threshold: float = field(default_factory=lambda: float(os.getenv("V5_CAUTIOUS_ACCURACY", "0.48")))
+    defensive_accuracy_threshold: float = field(default_factory=lambda: float(os.getenv("V5_DEFENSIVE_ACCURACY", "0.42")))
+    cautious_duration_minutes: int = field(default_factory=lambda: int(os.getenv("V5_CAUTIOUS_DURATION", "30")))
+    defensive_duration_minutes: int = field(default_factory=lambda: int(os.getenv("V5_DEFENSIVE_DURATION", "60")))
+    rolling_window: int = field(default_factory=lambda: int(os.getenv("V5_ROLLING_WINDOW", "20")))
 
     # Quality gate
     min_oos_accuracy: float = field(default_factory=lambda: float(os.getenv("V5_MIN_OOS_ACC", "0.53")))

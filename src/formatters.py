@@ -477,7 +477,7 @@ def format_help() -> str:
         "",
         "\U0001f4b5 <b>Payouts</b>",
         "<code>  Win  +$0.96    Loss  -$1.00\n"
-        "  Breakeven      51.04% win rate</code>",
+        "  Breakeven      51.02% win rate</code>",
     ]
 
     return "\n".join(lines)
@@ -1111,7 +1111,7 @@ def format_ensemble_signal_message(
     total = tracker_stats.total_signals if tracker_stats else 0
     wins = tracker_stats.wins if tracker_stats else 0
     losses = tracker_stats.losses if tracker_stats else 0
-    accuracy = tracker_stats.accuracy if tracker_stats else 0.0
+    accuracy = (tracker_stats.win_rate / 100.0) if tracker_stats else 0.0
 
     lines = [
         f"{dir_emoji} <b>V5 ENSEMBLE SIGNAL</b> {dir_arrow}",
