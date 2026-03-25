@@ -413,6 +413,8 @@ class PredictionModel:
         y_val: pd.Series,
         label: str = "OOS",
         calibrator=None,
+        win_payout: float = 0.96,
+        loss_amount: float = 1.00,
     ) -> dict:
         """Log detailed, honest validation metrics.
 
@@ -422,6 +424,8 @@ class PredictionModel:
             y_val: Validation labels.
             label: Label for log messages.
             calibrator: Optional IsotonicRegression calibrator for calibrated metrics.
+            win_payout: Profit on a win (from config).
+            loss_amount: Loss on a loss (from config).
         """
         preds = model.predict(X_val)
         proba = model.predict_proba(X_val)
@@ -481,7 +485,7 @@ class PredictionModel:
                 cal_acc = accuracy_score(y_val, cal_preds)
                 # Compute EV stats
                 cal_proba_correct = np.where(cal_preds == y_val, cal_proba, 1 - cal_proba)
-                ev_per_trade = cal_proba_correct * 0.96 - (1 - cal_proba_correct) * 1.0
+                ev_per_trade = cal_proba_correct * win_payout - (1 - cal_proba_correct) * loss_amount
                 logger.info(
                     f"[{label}] Calibrated accuracy: {cal_acc:.4f} | "
                     f"Avg EV per trade: ${np.mean(ev_per_trade):.4f}"
@@ -612,6 +616,8 @@ class PredictionModel:
         oos_metrics = self._log_honest_metrics(
             candidate_model, X_oos_for_metrics, y_oos,
             label="OOS-holdout", calibrator=calibrator,
+            win_payout=self.config.win_payout,
+            loss_amount=self.config.loss_amount,
         )
         new_val_accuracy = oos_metrics["accuracy"]
 

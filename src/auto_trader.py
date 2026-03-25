@@ -189,7 +189,6 @@ class AutoTrader:
         confidence = signal.get("confidence", 0)
         ev = signal.get("ev", 0.0)
         strength = signal.get("strength", "NORMAL")
-        strength = signal.get("strength", "SKIP")
         target_slot_ts = signal.get("target_slot_ts")
 
         # --- Safety Check 1: Is auto-trading enabled? ---
@@ -286,7 +285,6 @@ class AutoTrader:
             trade_data = trade_result["data"]
             trade_data["confidence"] = confidence
             trade_data["ev"] = ev
-            trade_data["strength"] = strength
             trade_data["strength"] = strength
             trade_data["balance_before"] = balance
             trade_data["balance_after"] = balance - self.trade_amount
