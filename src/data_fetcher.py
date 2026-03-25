@@ -275,6 +275,55 @@ class MEXCFetcher:
 
         return results
 
+    async def fetch_recent_trades(
+        self,
+        symbol: str | None = None,
+        limit: int = 500,
+    ) -> pd.DataFrame:
+        """Fetch recent trades from MEXC for volume-delta / order-flow features.
+
+        Args:
+            symbol: Trading pair (defaults to config symbol, e.g. BTCUSDT)
+            limit: Number of recent trades (max 1000)
+
+        Returns:
+            DataFrame with columns: time, price, qty, isBuyerMaker
+        """
+        await self._rate_limit()
+        client = await self._get_client()
+
+        params = {
+            "symbol": symbol or self.config.symbol,
+            "limit": min(limit, 1000),
+        }
+
+        try:
+            response = await client.get("/api/v3/trades", params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if not data:
+                logger.warning("No recent trades returned")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(data)
+            # Normalize column names to match internal convention
+            if "time" not in df.columns and "timestamp" in df.columns:
+                df = df.rename(columns={"timestamp": "time"})
+            df["time"] = pd.to_datetime(df["time"], unit="ms", utc=True)
+            df["price"] = df["price"].astype(np.float64)
+            df["qty"] = df["qty"].astype(np.float64)
+
+            logger.debug(f"Fetched {len(df)} recent trades")
+            return df
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"MEXC trades API error ({e.response.status_code}): {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to fetch recent trades: {e}")
+            raise
+
     async def close(self):
         """Close the HTTP client."""
         if self._client and not self._client.is_closed:

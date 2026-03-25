@@ -1,6 +1,6 @@
 # AprilXG V5 — Multi-Model Ensemble Implementation Plan
 
-## MASTER STATUS: PHASE 1 OF 5 — NOT STARTED
+## MASTER STATUS: PHASE 1 OF 5 — COMPLETE
 
 > **This file is the SINGLE SOURCE OF TRUTH for implementation.**
 > Every AI agent session MUST read this file FIRST, check the status boxes,
@@ -93,11 +93,11 @@ Regime Detector (volatility + trend classification)
 **Estimated size:** ~500 lines
 
 ### Status
-- [ ] 1.1 Update `requirements.txt`
-- [ ] 1.2 Add trade data fetching to `data_fetcher.py`
-- [ ] 1.3 Create `src/features_v2.py` with all feature groups
-- [ ] 1.4 Verify features compile and produce no NaN on sample data
-- [ ] 1.5 Commit: `Phase 1: Feature Engine V2`
+- [x] 1.1 Update `requirements.txt`
+- [x] 1.2 Add trade data fetching to `data_fetcher.py`
+- [x] 1.3 Create `src/features_v2.py` with all feature groups
+- [x] 1.4 Verify features compile and produce no NaN on sample data
+- [x] 1.5 Commit: `Phase 1: Feature Engine V2`
 
 ### 1.1 — Update `requirements.txt`
 
@@ -336,13 +336,13 @@ Reindex higher TF features to 5m index using ffill (same as current `features.py
    helper functions or reimplemented in `features_v2.py` (prefer self-contained).
 
 #### Validation Criteria (Phase 1 is DONE when):
-- [ ] `features_v2.py` imports without error
-- [ ] `FeatureEngineV2(config).compute_features(df_5m, htf_data)` returns DataFrame with 76 columns
-- [ ] No NaN in output when `ffill=True`
-- [ ] All feature values are finite (no inf)
-- [ ] Feature names list has 76 entries matching column names
-- [ ] `data_fetcher.py` has `fetch_recent_trades` method
-- [ ] `requirements.txt` includes lightgbm and catboost
+- [x] `features_v2.py` imports without error
+- [x] `FeatureEngineV2(config).compute_features(df_5m, htf_data)` returns DataFrame with 76 columns
+- [x] No NaN in output when `ffill=True`
+- [x] All feature values are finite (no inf)
+- [x] Feature names list has 76 entries matching column names
+- [x] `data_fetcher.py` has `fetch_recent_trades` method
+- [x] `requirements.txt` includes lightgbm and catboost
 
 ---
 
@@ -1059,3 +1059,19 @@ If backtest shows < 55% accuracy:
 - Root cause: standard TA features have near-zero signal on 5m BTC
 - Solution: Multi-model ensemble with microstructure features, regime switching, tiered trading
 - Phases 1-5 fully specified with exact function signatures, feature lists, and validation criteria
+
+### Session 1 — Phase 1: Feature Engine V2 (2025-03-25)
+- Added `lightgbm==4.6.0` and `catboost==1.2.7` to `requirements.txt`
+- Added `fetch_recent_trades()` method to `MEXCFetcher` in `data_fetcher.py` (MEXC `/api/v3/aggTrades` endpoint)
+- Created `src/features_v2.py` with `FeatureEngineV2` class implementing all 8 feature groups (76 features total):
+  - Group 1: Price Action Microstructure (12 features)
+  - Group 2: Multi-Scale Momentum (16 features)
+  - Group 3: Volatility & Regime (10 features)
+  - Group 4: Volume Profile (10 features)
+  - Group 5: Order Flow Proxy (6 features — with OHLCV estimation fallback)
+  - Group 6: Trend Indicators (8 features)
+  - Group 7: Time/Session Features (6 features)
+  - Group 8: Higher Timeframe Context (8 features — with neutral defaults fallback)
+- All TA indicators (RSI, ATR, MFI, ADX, MACD, EMA) implemented as self-contained static methods (no ta-lib dependency)
+- Validation passed: 76 columns, 0 NaN (ffill=True), 0 inf, feature names deterministic
+- Fixed `_fill_htf_nan()` to use neutral defaults (RSI=50, returns=0, ATR ratio=1) instead of NaN for HTF-missing case
