@@ -1075,3 +1075,4 @@ If backtest shows < 55% accuracy:
 - All TA indicators (RSI, ATR, MFI, ADX, MACD, EMA) implemented as self-contained static methods (no ta-lib dependency)
 - Validation passed: 76 columns, 0 NaN (ffill=True), 0 inf, feature names deterministic
 - Fixed `_fill_htf_nan()` to use neutral defaults (RSI=50, returns=0, ATR ratio=1) instead of NaN for HTF-missing case
+- Fixed `fetch_recent_trades()`: corrected endpoint from `/api/v3/trades` to `/api/v3/aggTrades`, removed extra `symbol` parameter, added aggTrades column renames (`a→id, p→price, q→qty, T→time, m→isBuyerMaker`), changed error handling to non-fatal (returns empty DataFrame)
