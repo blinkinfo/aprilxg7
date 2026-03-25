@@ -511,16 +511,25 @@ class SignalBot:
             next_slot_iso = next_slot.isoformat()
             candle_open_price = 0.0
 
-            # Record signal in tracker (always, regardless of trade decision)
-            sig = self.tracker.add_signal(
-                direction=prediction["signal"],
-                confidence=prediction["confidence"],
-                entry_price=current_price,
-                candle_slot_ts=next_slot_iso,
-                candle_open_price=candle_open_price,
-            )
+            # Only track signals that pass the tier gate
+            if trade_decision["trade"]:
+                sig = self.tracker.add_signal(
+                    direction=prediction["signal"],
+                    confidence=prediction["confidence"],
+                    entry_price=current_price,
+                    candle_slot_ts=next_slot_iso,
+                    candle_open_price=candle_open_price,
+                )
+            else:
+                # Lightweight stand-in for the formatter (not tracked)
+                from types import SimpleNamespace
+                sig = SimpleNamespace(
+                    direction=prediction["signal"],
+                    confidence=prediction["confidence"],
+                    candle_slot_ts=next_slot_iso,
+                )
 
-            # Get stats for formatter
+            # Get stats for formatter (only contains tracked/tradeable signals)
             stats = self.tracker.get_stats()
 
             # Send V5 formatted signal message
